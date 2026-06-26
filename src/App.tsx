@@ -1,6 +1,6 @@
 import { Prec, type Extension } from '@codemirror/state'
 import { keymap } from '@codemirror/view'
-import { closeSearchPanel, openSearchPanel, searchPanelOpen } from '@codemirror/search'
+import { closeSearchPanel, openSearchPanel, searchPanelOpen, selectNextOccurrence } from '@codemirror/search'
 import { basicSetup, EditorView } from 'codemirror'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
@@ -360,7 +360,7 @@ function EditorApp() {
       setFilterQuery('')
     }
     window.setTimeout(() => {
-      if (initialQuery.source === 'ref') {
+      if (initialQuery.source === 'ref' || initialQuery.source === 'selection') {
         view?.focus()
         return
       }
@@ -520,6 +520,11 @@ function EditorApp() {
             {
               key: 'Mod-Shift-f',
               run: toggleFilter,
+              preventDefault: true,
+            },
+            {
+              key: 'Mod-Shift-d',
+              run: selectNextOccurrence,
               preventDefault: true,
             },
             {

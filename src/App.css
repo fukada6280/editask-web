@@ -236,34 +236,33 @@
   background: transparent;
 }
 
-.cm-dow-朁E{
-  color: #7b1fa2;
+.cm-dow-月 {
+  color: #8e24aa;
 }
 
 .cm-dow-火 {
-  color: #d84315;
+  color: #e65100;
 }
 
 .cm-dow-水 {
-  color: #00796b;
+  color: #00838f;
 }
 
 .cm-dow-木 {
-  color: #2e7d32;
+  color: #1b5e20;
 }
 
-.cm-dow-釁E{
-  color: #996f00;
+.cm-dow-金 {
+  color: #a67c00;
 }
 
-.cm-dow-圁E{
+.cm-dow-土 {
   color: #1565c0;
 }
 
 .cm-dow-日 {
   color: #c62828;
 }
-
 @media (max-width: 780px) {
   .topbar,
   .statusbar,
