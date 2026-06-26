@@ -146,7 +146,7 @@
   grid-template-columns: minmax(0, 1fr);
 }
 
-.enhanced-filter-bar {
+.filter-bar {
   grid-row: 3;
   display: flex;
   align-items: center;
@@ -156,17 +156,17 @@
   padding: 7px 12px;
 }
 
-.enhanced-filter-bar label {
+.filter-bar label {
   color: #3c4043;
   font-size: 13px;
   font-weight: 600;
 }
 
-.enhanced-filter-bar input {
+.filter-bar input {
   width: min(360px, 45vw);
 }
 
-.enhanced-filter-bar span {
+.filter-bar span {
   color: #5f6368;
   font-size: 13px;
 }
@@ -232,11 +232,11 @@
 }
 
 .cm-editask-memo {
-  color: #667085;
-  background: #fbfcff;
+  color: inherit;
+  background: transparent;
 }
 
-.cm-dow-月 {
+.cm-dow-朁E{
   color: #7b1fa2;
 }
 
@@ -252,11 +252,11 @@
   color: #2e7d32;
 }
 
-.cm-dow-金 {
+.cm-dow-釁E{
   color: #996f00;
 }
 
-.cm-dow-土 {
+.cm-dow-圁E{
   color: #1565c0;
 }
 
@@ -288,12 +288,12 @@
     grid-template-columns: 1fr;
   }
 
-  .enhanced-filter-bar {
+  .filter-bar {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .enhanced-filter-bar input {
+  .filter-bar input {
     width: 100%;
   }
 }

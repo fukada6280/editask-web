@@ -1,7 +1,7 @@
 import { splitDocumentRegions } from './documentStructure'
 import { isSeparatorLine } from './separatorLine'
 
-export type EnhancedFilterParts = {
+export type FilterParts = {
   parkedText: string
   visibleText: string
   visibleCount: number
@@ -15,13 +15,13 @@ function splitLines(text: string): string[] {
   return text.split(/\r\n|\n|\r/)
 }
 
-export function joinEnhancedFilterParts(parkedText: string, visibleText: string): string {
+export function joinFilterParts(parkedText: string, visibleText: string): string {
   if (!parkedText) return visibleText
   if (!visibleText) return parkedText
   return `${parkedText}\n${visibleText}`
 }
 
-export function splitForEnhancedFilter(text: string, query: string): EnhancedFilterParts {
+export function splitForFilter(text: string, query: string): FilterParts {
   const needle = query.trim()
   if (!needle) {
     return {
