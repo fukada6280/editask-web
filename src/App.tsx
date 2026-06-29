@@ -498,7 +498,6 @@ function EditorApp() {
     const line = view.state.doc.lineAt(view.state.selection.main.head)
     const ref = getRefValueFromLine(line.text)
     if (!ref) {
-      window.alert('ref not found')
       return
     }
 
@@ -661,7 +660,17 @@ function EditorApp() {
             onBlur={() => void loadCurrentFile()}
             aria-label="File name"
           />
-          <span className={`save-state save-state-${saveState}`}>{statusLabel}</span>
+          <button
+            type="button"
+            className={`save-state save-state-${saveState}`}
+            onClick={() => {
+              if (saveState !== 'saving') void saveCurrentFile()
+            }}
+            disabled={saveState === 'saving'}
+            title="Save"
+          >
+            {statusLabel}
+          </button>
         </div>
         <div className="session-controls">
           <span className="user-label">{user?.displayName ?? user?.email}</span>
