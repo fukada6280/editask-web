@@ -7,6 +7,7 @@ import {
   setDoc,
   type Firestore,
 } from 'firebase/firestore'
+import { createDefaultTemplateContent } from '../domain/defaultTemplate'
 
 export type EditaskFile = {
   name: string
@@ -24,8 +25,37 @@ function fileDoc(db: Firestore, uid: string, fileName: string) {
 }
 
 export async function loadFile(db: Firestore, uid: string, fileName: string): Promise<EditaskFile> {
-  const snapshot = await getDoc(fileDoc(db, uid, fileName))
+  const targetRef = fileDoc(db, uid, fileName)
+  const snapshot = await getDoc(targetRef)
   if (!snapshot.exists()) {
+    if (fileName === 'main') {
+      const defaultRef = fileDoc(db, uid, 'default')
+      const defaultSnapshot = await getDoc(defaultRef)
+      if (defaultSnapshot.exists()) {
+        const defaultData = defaultSnapshot.data()
+        const defaultContent = String(defaultData.content ?? '')
+        if (defaultContent.trim()) {
+          await setDoc(targetRef, {
+            name: fileName,
+            content: defaultContent,
+            revision: 1,
+            updatedAt: serverTimestamp(),
+          })
+          return { name: fileName, content: defaultContent, revision: 1 }
+        }
+      }
+
+      const content = createDefaultTemplateContent()
+      const initialFile = {
+        name: fileName,
+        content,
+        revision: 1,
+        updatedAt: serverTimestamp(),
+      }
+      await setDoc(defaultRef, { ...initialFile, name: 'default' }, { merge: false })
+      await setDoc(targetRef, initialFile, { merge: false })
+      return { name: fileName, content, revision: 1 }
+    }
     return { name: fileName, content: '', revision: 0 }
   }
 
