@@ -27,7 +27,10 @@ type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
 
 type CursorRestoreTarget = {
   lineText: string
+  normalizedLineText: string
+  trimmedText: string
   column: number
+  trimmedColumn: number
 }
 
 type FilterInitialQuery = {
@@ -67,6 +70,38 @@ function findLinePosition(text: string, lineText: string, column: number): numbe
     offset += line.length + 1
   }
   return undefined
+}
+
+function firstNonEmptyLine(text: string): string | undefined {
+  return text.split(/\r?\n/).find((line) => line.trim())
+}
+
+function normalizeRestoreLine(lineText: string): string {
+  return firstNonEmptyLine(normalizeDocumentText(lineText)) ?? lineText
+}
+
+function findRestorePosition(text: string, target: CursorRestoreTarget, fallback: number): number {
+  const exactPosition = findLinePosition(text, target.lineText, target.column)
+  if (exactPosition !== undefined) return exactPosition
+
+  if (target.normalizedLineText && target.normalizedLineText !== target.lineText) {
+    const normalizedPosition = findLinePosition(text, target.normalizedLineText, target.column)
+    if (normalizedPosition !== undefined) return normalizedPosition
+  }
+
+  if (target.trimmedText) {
+    let offset = 0
+    const lines = text.split(/\r?\n/)
+    for (const line of lines) {
+      const index = line.indexOf(target.trimmedText)
+      if (index >= 0) {
+        return offset + index + Math.min(target.trimmedColumn, target.trimmedText.length)
+      }
+      offset += line.length + 1
+    }
+  }
+
+  return Math.min(fallback, text.length)
 }
 
 function cursorOffsetInScroller(view: EditorView, position: number): number | undefined {
@@ -156,6 +191,19 @@ function EditorApp() {
     return 'Idle'
   }, [saveState])
 
+  const captureCursorRestoreTarget = useCallback((view: EditorView): CursorRestoreTarget => {
+    const line = view.state.doc.lineAt(view.state.selection.main.head)
+    const column = view.state.selection.main.head - line.from
+    const leadingSpaces = line.text.length - line.text.trimStart().length
+    return {
+      lineText: line.text,
+      normalizedLineText: normalizeRestoreLine(line.text),
+      trimmedText: line.text.trim(),
+      column,
+      trimmedColumn: Math.max(0, column - leadingSpaces),
+    }
+  }, [])
+
   const loadCurrentFile = useCallback(async () => {
     const currentUser = userRef.current
     const currentFileName = fileNameRef.current
@@ -183,33 +231,46 @@ function EditorApp() {
   const saveCurrentFile = useCallback(async () => {
     const currentUser = userRef.current
     const currentFileName = fileNameRef.current
-    if (!db || !currentUser || !editorView.current) return
+    const view = editorView.current
+    if (!db || !currentUser || !view) return
 
     setSaveState('saving')
-    const editorText = editorView.current.state.doc.toString()
-    const selectionHead = editorView.current.state.selection.main.head
-    const textToSave = filterActiveRef.current
-      ? joinFilterParts(parkedTextRef.current, editorText)
+    const editorText = view.state.doc.toString()
+    const selectionHead = view.state.selection.main.head
+    const filterActive = filterActiveRef.current
+    const restoreTarget = captureCursorRestoreTarget(view)
+    const restoreOffset = cursorOffsetInScroller(view, selectionHead)
+    const visibleTextToSave = filterActive ? normalizeDocumentText(editorText) : editorText
+    const textToSave = filterActive
+      ? joinFilterParts(parkedTextRef.current, visibleTextToSave)
       : editorText
-    const normalized = normalizeDocumentText(textToSave)
+    const normalized = filterActive ? textToSave : normalizeDocumentText(textToSave)
 
     try {
       await saveFile(db, currentUser.uid, currentFileName, normalized)
-      if (filterActiveRef.current) {
-      } else {
-        const nextSelection = Math.min(selectionHead, normalized.length)
-        editorView.current.dispatch({
-          changes: { from: 0, to: editorView.current.state.doc.length, insert: normalized },
+      if (filterActive) {
+        const nextSelection = findRestorePosition(visibleTextToSave, restoreTarget, selectionHead)
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: visibleTextToSave },
           selection: { anchor: nextSelection },
           scrollIntoView: true,
         })
+        restoreCursorOffsetInScroller(view, nextSelection, restoreOffset)
+      } else {
+        const nextSelection = findRestorePosition(normalized, restoreTarget, selectionHead)
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: normalized },
+          selection: { anchor: nextSelection },
+          scrollIntoView: true,
+        })
+        restoreCursorOffsetInScroller(view, nextSelection, restoreOffset)
       }
       setTodayTaskSummary(summarizeTodayTasks(normalized))
       setSaveState('saved')
     } catch {
       setSaveState('error')
     }
-  }, [])
+  }, [captureCursorRestoreTarget])
 
   const deleteCurrentFile = useCallback(async () => {
     const currentUser = userRef.current
@@ -311,15 +372,14 @@ function EditorApp() {
       return
     }
 
-    const currentLine = view.state.doc.lineAt(view.state.selection.main.head)
-    const restoreLineText = currentLine.text
-    const restoreColumn = view.state.selection.main.head - currentLine.from
+    const restoreTarget = captureCursorRestoreTarget(view)
+    const selectionHead = view.state.selection.main.head
     const restoreOffset = cursorOffsetInScroller(view, view.state.selection.main.head)
     const fullText = filterActiveRef.current
       ? joinFilterParts(parkedTextRef.current, view.state.doc.toString())
       : view.state.doc.toString()
     const normalized = normalizeDocumentText(fullText)
-    const restorePosition = findLinePosition(normalized, restoreLineText, restoreColumn) ?? 0
+    const restorePosition = findRestorePosition(normalized, restoreTarget, selectionHead)
     parkedTextRef.current = ''
     filterActiveRef.current = false
     filterOpenRef.current = false
@@ -335,18 +395,12 @@ function EditorApp() {
     restoreCursorOffsetInScroller(view, restorePosition, restoreOffset)
     setSaveState((state) => (state === 'saving' ? state : 'dirty'))
     view.focus()
-  }, [])
+  }, [captureCursorRestoreTarget])
 
   const openFilter = useCallback(() => {
     const view = editorView.current
     const initialQuery = view ? getFilterInitialQuery(view) : { query: '', source: 'none' as const }
-    const currentLine = view?.state.doc.lineAt(view.state.selection.main.head)
-    const restore = view && currentLine
-      ? {
-          lineText: currentLine.text,
-          column: view.state.selection.main.head - currentLine.from,
-        }
-      : undefined
+    const restore = view ? captureCursorRestoreTarget(view) : undefined
     filterOpenRef.current = true
     setFilterOpen(true)
     if (initialQuery.query && view) {
@@ -367,7 +421,7 @@ function EditorApp() {
       filterInputRef.current?.focus()
       filterInputRef.current?.select()
     }, 0)
-  }, [applyFilterParts, getFilterInitialQuery])
+  }, [applyFilterParts, captureCursorRestoreTarget, getFilterInitialQuery])
 
   const toggleFilter = useCallback(() => {
     if (filterOpenRef.current) {

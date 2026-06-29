@@ -15,6 +15,7 @@ const MON = '\u6708'
 const THU = '\u6728'
 const FRI = '\u91d1'
 const SAT = '\u571f'
+const WED = '\u6c34'
 
 describe('toggleTaskStartEndLine', () => {
   it('cycles start, end, and clear for a task line', () => {
@@ -144,15 +145,15 @@ describe('normalizeDocumentText', () => {
     expect(
       normalizeDocumentText(
         [
-          '            2026/06/27 task b',
+          '            2026/07/01 task b',
           '',
           '   ',
-          '            2026/06/27 task a',
+          '            2026/07/01 task a',
           '',
           '',
         ].join('\n'),
       ),
-    ).toBe(`            2026/06/27 ${SAT} task a\n            2026/06/27 ${SAT} task b\n`)
+    ).toBe(`            2026/07/01 ${WED} task a\n            2026/07/01 ${WED} task b\n`)
   })
 
   it('keeps blank lines inside memo blocks', () => {
