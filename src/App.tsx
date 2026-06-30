@@ -21,7 +21,7 @@ import {
 } from './domain/editaskText'
 import { editaskHighlightExtensions } from './editor/editaskExtensions'
 import { db, firebaseEnabled } from './firebase/client'
-import { deleteFile, ensureFileFromDefault, loadFile, saveFile, subscribeFile } from './firebase/fileRepository'
+import { ensureFileFromDefault, loadFile, saveFile, subscribeFile } from './firebase/fileRepository'
 import { useAuthUser } from './hooks/useAuthUser'
 
 type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error' | 'conflict'
@@ -353,36 +353,6 @@ function EditorApp() {
     }
   }, [captureCursorRestoreTarget])
 
-  const deleteCurrentFile = useCallback(async () => {
-    const currentUser = userRef.current
-    const currentFileName = fileNameRef.current
-    if (!db || !currentUser || !editorView.current) return
-
-    const confirmed = window.confirm(`Delete "${currentFileName}"? This cannot be undone.`)
-    if (!confirmed) return
-
-    setSaveState('saving')
-    try {
-      await deleteFile(db, currentUser.uid, currentFileName)
-      parkedTextRef.current = ''
-      pendingRemoteContentRef.current = null
-      setConflictModalOpen(false)
-      filterActiveRef.current = false
-      filterOpenRef.current = false
-      setFilterActive(false)
-      setFilterOpen(false)
-      setFilterQuery('')
-      setFilterVisibleCount(null)
-      editorView.current.dispatch({
-        changes: { from: 0, to: editorView.current.state.doc.length, insert: '' },
-      })
-      setTodayTaskSummary(summarizeTodayTasks(''))
-      setSaveState('saved')
-    } catch {
-      setSaveState('error')
-    }
-  }, [])
-
   const applyFilterParts = useCallback((parts: FilterParts, restore?: CursorRestoreTarget) => {
     parkedTextRef.current = parts.parkedText
     filterActiveRef.current = true
@@ -606,6 +576,13 @@ function EditorApp() {
   const exportCurrentFile = useCallback(() => {
     downloadText(fileNameRef.current, editorView.current?.state.doc.toString() ?? '')
   }, [])
+
+  const doneCurrentLine = useCallback(() => {
+    const view = editorView.current
+    if (!view) return
+    toggleCurrentLineStartEnd(view)
+    view.focus()
+  }, [toggleCurrentLineStartEnd])
 
   const openConflictResolver = useCallback(() => {
     if (pendingRemoteContentRef.current !== null) {
@@ -836,11 +813,11 @@ function EditorApp() {
         </div>
         <div className="session-controls">
           <span className="user-label">{user?.displayName ?? user?.email}</span>
+          <button type="button" onClick={doneCurrentLine}>
+            Done
+          </button>
           <button type="button" onClick={exportCurrentFile}>
             Export
-          </button>
-          <button type="button" className="danger-button" onClick={() => void deleteCurrentFile()}>
-            Delete
           </button>
           <button type="button" onClick={() => void signOutUser()}>
             Logout

@@ -1,5 +1,4 @@
 import {
-  deleteDoc,
   doc,
   getDoc,
   increment,
@@ -16,10 +15,6 @@ export type EditaskFile = {
   content: string
   revision: number
   updatedAt?: unknown
-}
-
-export async function deleteFile(db: Firestore, uid: string, fileName: string): Promise<void> {
-  await deleteDoc(fileDoc(db, uid, fileName))
 }
 
 function fileDoc(db: Firestore, uid: string, fileName: string) {
