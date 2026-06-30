@@ -3,9 +3,11 @@ import {
   doc,
   getDoc,
   increment,
+  onSnapshot,
   serverTimestamp,
   setDoc,
   type Firestore,
+  type Unsubscribe,
 } from 'firebase/firestore'
 import { createDefaultTemplateContent } from '../domain/defaultTemplate'
 
@@ -66,6 +68,33 @@ export async function loadFile(db: Firestore, uid: string, fileName: string): Pr
     revision: Number(data.revision ?? 0),
     updatedAt: data.updatedAt,
   }
+}
+
+export function subscribeFile(
+  db: Firestore,
+  uid: string,
+  fileName: string,
+  onChange: (file: EditaskFile) => void,
+  onError: () => void,
+): Unsubscribe {
+  return onSnapshot(
+    fileDoc(db, uid, fileName),
+    (snapshot) => {
+      if (!snapshot.exists()) {
+        onChange({ name: fileName, content: '', revision: 0 })
+        return
+      }
+
+      const data = snapshot.data()
+      onChange({
+        name: String(data.name ?? fileName),
+        content: String(data.content ?? ''),
+        revision: Number(data.revision ?? 0),
+        updatedAt: data.updatedAt,
+      })
+    },
+    onError,
+  )
 }
 
 export async function saveFile(

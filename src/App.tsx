@@ -14,16 +14,17 @@ import {
   formatEstimateMinutes,
   isUrlRef,
   normalizeDocumentText,
+  parseTaskLine,
   shiftTaskDateLine,
   summarizeTodayTasks,
   toggleTaskStartEndLineWithNext,
 } from './domain/editaskText'
 import { editaskHighlightExtensions } from './editor/editaskExtensions'
 import { db, firebaseEnabled } from './firebase/client'
-import { deleteFile, ensureFileFromDefault, loadFile, saveFile } from './firebase/fileRepository'
+import { deleteFile, ensureFileFromDefault, loadFile, saveFile, subscribeFile } from './firebase/fileRepository'
 import { useAuthUser } from './hooks/useAuthUser'
 
-type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
+type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error' | 'conflict'
 
 type CursorRestoreTarget = {
   lineText: string
@@ -31,11 +32,19 @@ type CursorRestoreTarget = {
   trimmedText: string
   column: number
   trimmedColumn: number
+  completed: boolean
 }
 
 type FilterInitialQuery = {
   query: string
   source: 'selection' | 'ref' | 'none'
+}
+
+type DiffPreview = {
+  localOnly: string[]
+  remoteOnly: string[]
+  localOverflow: number
+  remoteOverflow: number
 }
 
 // basicSetup starts with lineNumbers() and highlightActiveLineGutter().
@@ -72,6 +81,43 @@ function findLinePosition(text: string, lineText: string, column: number): numbe
   return undefined
 }
 
+function buildLineDiffPreview(localText: string, remoteText: string, maxLines = 8): DiffPreview {
+  const localLines = localText.split(/\r?\n/).filter((line) => line.trim())
+  const remoteLines = remoteText.split(/\r?\n/).filter((line) => line.trim())
+  const remoteCounts = new Map<string, number>()
+  const localCounts = new Map<string, number>()
+
+  remoteLines.forEach((line) => remoteCounts.set(line, (remoteCounts.get(line) ?? 0) + 1))
+  localLines.forEach((line) => localCounts.set(line, (localCounts.get(line) ?? 0) + 1))
+
+  const localOnly: string[] = []
+  for (const line of localLines) {
+    const count = remoteCounts.get(line) ?? 0
+    if (count > 0) {
+      remoteCounts.set(line, count - 1)
+    } else {
+      localOnly.push(line)
+    }
+  }
+
+  const remoteOnly: string[] = []
+  for (const line of remoteLines) {
+    const count = localCounts.get(line) ?? 0
+    if (count > 0) {
+      localCounts.set(line, count - 1)
+    } else {
+      remoteOnly.push(line)
+    }
+  }
+
+  return {
+    localOnly: localOnly.slice(0, maxLines),
+    remoteOnly: remoteOnly.slice(0, maxLines),
+    localOverflow: Math.max(0, localOnly.length - maxLines),
+    remoteOverflow: Math.max(0, remoteOnly.length - maxLines),
+  }
+}
+
 function firstNonEmptyLine(text: string): string | undefined {
   return text.split(/\r?\n/).find((line) => line.trim())
 }
@@ -102,6 +148,11 @@ function findRestorePosition(text: string, target: CursorRestoreTarget, fallback
   }
 
   return Math.min(fallback, text.length)
+}
+
+function findSaveCursorPosition(text: string, target: CursorRestoreTarget, fallback: number): number {
+  if (target.completed) return Math.min(fallback, text.length)
+  return findRestorePosition(text, target, fallback)
 }
 
 function cursorOffsetInScroller(view: EditorView, position: number): number | undefined {
@@ -156,14 +207,18 @@ function EditorApp() {
   const fileNameRef = useRef(fileNameFromHash())
   const filterActiveRef = useRef(false)
   const filterOpenRef = useRef(false)
+  const saveStateRef = useRef<SaveState>('idle')
   const skipNextFilterEffectRef = useRef(false)
   const parkedTextRef = useRef('')
+  const pendingRemoteContentRef = useRef<string | null>(null)
   const [fileName, setFileName] = useState(fileNameFromHash)
   const [filterQuery, setFilterQuery] = useState('')
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterActive, setFilterActive] = useState(false)
   const [filterVisibleCount, setFilterVisibleCount] = useState<number | null>(null)
   const [saveState, setSaveState] = useState<SaveState>('idle')
+  const [conflictModalOpen, setConflictModalOpen] = useState(false)
+  const [conflictVersion, setConflictVersion] = useState(0)
   const [todayTaskSummary, setTodayTaskSummary] = useState(() => summarizeTodayTasks(''))
 
   useEffect(() => {
@@ -183,24 +238,46 @@ function EditorApp() {
     filterOpenRef.current = filterOpen
   }, [filterOpen])
 
+  useEffect(() => {
+    saveStateRef.current = saveState
+  }, [saveState])
+
   const statusLabel = useMemo(() => {
     if (saveState === 'dirty') return 'Unsaved'
     if (saveState === 'saving') return 'Saving'
     if (saveState === 'saved') return 'Saved'
     if (saveState === 'error') return 'Error'
+    if (saveState === 'conflict') return 'Conflict'
     return 'Idle'
   }, [saveState])
+
+  const currentEditorFullText = useCallback((): string => {
+    const view = editorView.current
+    if (!view) return ''
+    return filterActiveRef.current
+      ? joinFilterParts(parkedTextRef.current, view.state.doc.toString())
+      : view.state.doc.toString()
+  }, [])
+
+  const conflictDiff = useMemo(() => {
+    if (!conflictModalOpen || pendingRemoteContentRef.current === null) {
+      return buildLineDiffPreview('', '')
+    }
+    return buildLineDiffPreview(currentEditorFullText(), pendingRemoteContentRef.current)
+  }, [conflictModalOpen, conflictVersion, currentEditorFullText])
 
   const captureCursorRestoreTarget = useCallback((view: EditorView): CursorRestoreTarget => {
     const line = view.state.doc.lineAt(view.state.selection.main.head)
     const column = view.state.selection.main.head - line.from
     const leadingSpaces = line.text.length - line.text.trimStart().length
+    const task = parseTaskLine(line.text)
     return {
       lineText: line.text,
       normalizedLineText: normalizeRestoreLine(line.text),
       trimmedText: line.text.trim(),
       column,
       trimmedColumn: Math.max(0, column - leadingSpaces),
+      completed: task.raw === undefined && Boolean(task.end),
     }
   }, [])
 
@@ -212,6 +289,8 @@ function EditorApp() {
     try {
       const loaded = await loadFile(db, currentUser.uid, currentFileName)
       parkedTextRef.current = ''
+      pendingRemoteContentRef.current = null
+      setConflictModalOpen(false)
       filterActiveRef.current = false
       filterOpenRef.current = false
       setFilterActive(false)
@@ -249,7 +328,7 @@ function EditorApp() {
     try {
       await saveFile(db, currentUser.uid, currentFileName, normalized)
       if (filterActive) {
-        const nextSelection = findRestorePosition(visibleTextToSave, restoreTarget, selectionHead)
+        const nextSelection = findSaveCursorPosition(visibleTextToSave, restoreTarget, selectionHead)
         view.dispatch({
           changes: { from: 0, to: view.state.doc.length, insert: visibleTextToSave },
           selection: { anchor: nextSelection },
@@ -257,7 +336,7 @@ function EditorApp() {
         })
         restoreCursorOffsetInScroller(view, nextSelection, restoreOffset)
       } else {
-        const nextSelection = findRestorePosition(normalized, restoreTarget, selectionHead)
+        const nextSelection = findSaveCursorPosition(normalized, restoreTarget, selectionHead)
         view.dispatch({
           changes: { from: 0, to: view.state.doc.length, insert: normalized },
           selection: { anchor: nextSelection },
@@ -266,6 +345,8 @@ function EditorApp() {
         restoreCursorOffsetInScroller(view, nextSelection, restoreOffset)
       }
       setTodayTaskSummary(summarizeTodayTasks(normalized))
+      pendingRemoteContentRef.current = null
+      setConflictModalOpen(false)
       setSaveState('saved')
     } catch {
       setSaveState('error')
@@ -284,6 +365,8 @@ function EditorApp() {
     try {
       await deleteFile(db, currentUser.uid, currentFileName)
       parkedTextRef.current = ''
+      pendingRemoteContentRef.current = null
+      setConflictModalOpen(false)
       filterActiveRef.current = false
       filterOpenRef.current = false
       setFilterActive(false)
@@ -318,7 +401,7 @@ function EditorApp() {
         ? { selection: { anchor: restorePosition }, scrollIntoView: true }
         : {}),
     })
-    setSaveState((state) => (state === 'saving' ? state : 'dirty'))
+    setSaveState((state) => (state === 'saving' || state === 'conflict' ? state : 'dirty'))
   }, [])
 
   const applyFilter = useCallback(
@@ -379,7 +462,7 @@ function EditorApp() {
       ? joinFilterParts(parkedTextRef.current, view.state.doc.toString())
       : view.state.doc.toString()
     const normalized = normalizeDocumentText(fullText)
-    const restorePosition = findRestorePosition(normalized, restoreTarget, selectionHead)
+    const restorePosition = findSaveCursorPosition(normalized, restoreTarget, selectionHead)
     parkedTextRef.current = ''
     filterActiveRef.current = false
     filterOpenRef.current = false
@@ -393,7 +476,7 @@ function EditorApp() {
       scrollIntoView: true,
     })
     restoreCursorOffsetInScroller(view, restorePosition, restoreOffset)
-    setSaveState((state) => (state === 'saving' ? state : 'dirty'))
+    setSaveState((state) => (state === 'saving' || state === 'conflict' ? state : 'dirty'))
     view.focus()
   }, [captureCursorRestoreTarget])
 
@@ -524,6 +607,41 @@ function EditorApp() {
     downloadText(fileNameRef.current, editorView.current?.state.doc.toString() ?? '')
   }, [])
 
+  const openConflictResolver = useCallback(() => {
+    if (pendingRemoteContentRef.current !== null) {
+      setConflictModalOpen(true)
+    }
+  }, [])
+
+  const resolveConflictWithLocal = useCallback(() => {
+    setConflictModalOpen(false)
+    void saveCurrentFile()
+  }, [saveCurrentFile])
+
+  const resolveConflictWithRemote = useCallback(() => {
+    const view = editorView.current
+    const remoteContent = pendingRemoteContentRef.current
+    if (!view || remoteContent === null) return
+
+    parkedTextRef.current = ''
+    pendingRemoteContentRef.current = null
+    filterActiveRef.current = false
+    filterOpenRef.current = false
+    setFilterActive(false)
+    setFilterOpen(false)
+    setFilterQuery('')
+    setFilterVisibleCount(null)
+    setConflictModalOpen(false)
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: remoteContent },
+      selection: { anchor: Math.min(view.state.selection.main.head, remoteContent.length) },
+      scrollIntoView: true,
+    })
+    setTodayTaskSummary(summarizeTodayTasks(remoteContent))
+    setSaveState('saved')
+    view.focus()
+  }, [])
+
   useEffect(() => {
     updateHashFileName(fileName)
   }, [fileName])
@@ -531,6 +649,44 @@ function EditorApp() {
   useEffect(() => {
     void loadCurrentFile()
   }, [fileName, loadCurrentFile, user])
+
+  useEffect(() => {
+    if (!db || !user) return undefined
+
+    return subscribeFile(
+      db,
+      user.uid,
+      fileName,
+      (remoteFile) => {
+        const view = editorView.current
+        if (!view) return
+        if (saveStateRef.current === 'saving') return
+
+        const currentContent = currentEditorFullText()
+        if (currentContent === remoteFile.content) return
+
+        if (saveStateRef.current !== 'saved' || filterActiveRef.current) {
+          pendingRemoteContentRef.current = remoteFile.content
+          setConflictVersion((version) => version + 1)
+          saveStateRef.current = 'conflict'
+          setSaveState('conflict')
+          return
+        }
+
+        const selectionHead = Math.min(view.state.selection.main.head, remoteFile.content.length)
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: remoteFile.content },
+          selection: { anchor: selectionHead },
+          scrollIntoView: true,
+        })
+        setTodayTaskSummary(summarizeTodayTasks(remoteFile.content))
+        setSaveState('saved')
+      },
+      () => {
+        if (saveStateRef.current === 'saved') setSaveState('error')
+      },
+    )
+  }, [currentEditorFullText, fileName, user])
 
   useEffect(() => {
     if (!filterOpen) return undefined
@@ -603,14 +759,15 @@ function EditorApp() {
             if (filterActiveRef.current) {
               setFilterVisibleCount(update.state.doc.length > 0 ? update.state.doc.lines : 0)
             }
-            setSaveState((state) => (state === 'saving' ? state : 'dirty'))
+            setSaveState((state) => (state === 'saving' || state === 'conflict' ? state : 'dirty'))
           }
         }),
         EditorView.domEventHandlers({
           keydown(event) {
             if (event.ctrlKey && event.key.toLowerCase() === 's') {
               event.preventDefault()
-              void saveCurrentFile()
+              if (saveStateRef.current === 'conflict') openConflictResolver()
+              else void saveCurrentFile()
               return true
             }
             if (event.ctrlKey && event.key.toLowerCase() === 'r') {
@@ -635,6 +792,7 @@ function EditorApp() {
     }
   }, [
     closeFilter,
+    openConflictResolver,
     openRef,
     saveCurrentFile,
     shiftSelectedTaskDates,
@@ -664,9 +822,13 @@ function EditorApp() {
             type="button"
             className={`save-state save-state-${saveState}`}
             onClick={() => {
-              if (saveState !== 'saving') void saveCurrentFile()
+              if (saveState === 'conflict') {
+                openConflictResolver()
+                return
+              }
+              if (saveState === 'dirty' || saveState === 'error') void saveCurrentFile()
             }}
-            disabled={saveState === 'saving'}
+            disabled={saveState !== 'dirty' && saveState !== 'error' && saveState !== 'conflict'}
             title="Save"
           >
             {statusLabel}
@@ -685,6 +847,43 @@ function EditorApp() {
           </button>
         </div>
       </header>
+
+      {conflictModalOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="conflict-dialog" role="dialog" aria-modal="true" aria-labelledby="conflict-title">
+            <h2 id="conflict-title">Conflict</h2>
+            <p>他のタブでこのファイルが更新されています。どちらを正として残すか選んでください。</p>
+            <div className="conflict-diff">
+              <section>
+                <h3>ローカルのみ</h3>
+                <pre>
+                  {conflictDiff.localOnly.length > 0
+                    ? conflictDiff.localOnly.map((line) => `- ${line}`).join('\n')
+                    : '差分なし'}
+                  {conflictDiff.localOverflow > 0 ? `\n...他 ${conflictDiff.localOverflow} 行` : ''}
+                </pre>
+              </section>
+              <section>
+                <h3>リモートのみ</h3>
+                <pre>
+                  {conflictDiff.remoteOnly.length > 0
+                    ? conflictDiff.remoteOnly.map((line) => `+ ${line}`).join('\n')
+                    : '差分なし'}
+                  {conflictDiff.remoteOverflow > 0 ? `\n...他 ${conflictDiff.remoteOverflow} 行` : ''}
+                </pre>
+              </section>
+            </div>
+            <div className="conflict-actions">
+              <button type="button" onClick={resolveConflictWithLocal}>
+                この内容で保存
+              </button>
+              <button type="button" className="primary-button" onClick={resolveConflictWithRemote}>
+                リモートを読み込む
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {filterOpen && (
         <section className="filter-bar">
